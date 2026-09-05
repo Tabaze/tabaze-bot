@@ -56,6 +56,35 @@ export interface LLMConfig {
 
 export type EnvSource = Record<string, string | undefined>;
 
+const PROVIDER_API_KEY_ENV_VAR: Record<LLMProvider, string> = {
+  [LLMProvider.OpenAI]: 'OPENAI_API_KEY',
+  [LLMProvider.Anthropic]: 'ANTHROPIC_API_KEY',
+  [LLMProvider.Gemini]: 'GEMINI_API_KEY',
+  [LLMProvider.Local]: 'LOCAL_LLM_API_KEY',
+};
+
+export interface ApiKeyStatus {
+  readonly provider: LLMProvider;
+  readonly envVar: string;
+  readonly found: boolean;
+  /** Local inference servers commonly run without auth, so an absent key isn't a problem. */
+  readonly optional: boolean;
+}
+
+/**
+ * Reports which provider API keys are present in the environment, regardless
+ * of which provider is actually configured to be in use. Never returns the
+ * key values themselves -- only whether each one was set.
+ */
+export function describeApiKeyStatus(env: EnvSource): readonly ApiKeyStatus[] {
+  return (Object.entries(PROVIDER_API_KEY_ENV_VAR) as [LLMProvider, string][]).map(([provider, envVar]) => ({
+    provider,
+    envVar,
+    found: Boolean(env[envVar]?.trim()),
+    optional: provider === LLMProvider.Local,
+  }));
+}
+
 /** Reads a required variable, or records why it's missing and returns ''. */
 function required(env: EnvSource, key: string, context: string, problems: string[]): string {
   const value = env[key];
