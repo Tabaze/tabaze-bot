@@ -1,0 +1,12 @@
+services:
+  llm-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: multi-llm-abstraction-layer:latest
+    container_name: llm-service
+    # index.ts is a run-to-completion example (one generate + one stream call),
+    # not a long-lived server -- no restart policy and no port mapping. If you
+    # turn this into an HTTP service, add `ports:` and `restart: unless-stopped`.
+    env_file:
+      - ../.env

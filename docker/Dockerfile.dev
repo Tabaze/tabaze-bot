@@ -1,0 +1,14 @@
+# Development image: installs all dependencies (including devDependencies)
+# and runs the TypeScript source directly via `tsx watch`. Source code is
+# expected to be bind-mounted over /app by docker-compose.dev.yml, so edits
+# on the host are picked up without rebuilding the image.
+
+FROM node:20-alpine
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+CMD ["npm", "run", "dev"]

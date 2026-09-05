@@ -1,0 +1,22 @@
+services:
+  llm-service-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: multi-llm-abstraction-layer:dev
+    container_name: llm-service-dev
+    env_file:
+      - ../.env
+    volumes:
+      # Bind-mount the source so `tsx watch` (run by the image's CMD) picks
+      # up host edits without an image rebuild. node_modules stays inside
+      # the container's own filesystem so host/container platform binaries
+      # never collide.
+      - ../src:/app/src
+      - ../tests:/app/tests
+      - ../package.json:/app/package.json
+      - ../tsconfig.json:/app/tsconfig.json
+      - ../vitest.config.ts:/app/vitest.config.ts
+      - /app/node_modules
+    stdin_open: true
+    tty: true
