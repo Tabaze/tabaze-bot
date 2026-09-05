@@ -1,55 +1,33 @@
 import { buildCompositionRoot } from './config/composition-root.js';
-import { systemMessage, userMessage, type MessageList } from './domain/models/message.js';
-import { LLMError } from './domain/errors/llm-error.js';
-import { StreamInterruptedError } from './domain/errors/stream-interrupted-error.js';
+import { ConfigurationError } from './domain/errors/configuration-error.js';
+import { startHttpServer } from './api/http-server.js';
 
-/**
- * Example application code. Note that nothing below this line imports
- * from `infrastructure/llm/adapters/*`, an OpenAI/Anthropic/Gemini SDK, or
- * `LLMProvider` -- it only knows about `ILLMService` and domain models.
- */
-async function main(): Promise<void> {
-  const { llmService, logger } = buildCompositionRoot();
+const DEFAULT_PORT = 3000;
 
-  const messages: MessageList = [
-    systemMessage('You are a concise, helpful assistant.'),
-    userMessage('In one sentence, what is a multi-LLM abstraction layer?'),
-  ];
-
-  try {
-    const promptTokens = await llmService.countTokens(messages);
-    logger.info('Prompt token count', { promptTokens });
-
-    const response = await llmService.generate(messages, { temperature: 0.7, maxTokens: 200 });
-    logger.info('Generation complete', {
-      provider: response.provider,
-      model: response.model,
-      finishReason: response.finishReason,
-      usage: response.usage,
-    });
-    console.log(response.content);
-
-    console.log('\n--- streaming the same request ---\n');
-    for await (const chunk of llmService.generateStream(messages, { temperature: 0.7, maxTokens: 200 })) {
-      process.stdout.write(chunk.delta);
-      if (chunk.finishReason) {
-        console.log(`\n[finished: ${chunk.finishReason}]`);
-      }
-    }
-  } catch (error) {
-    if (error instanceof StreamInterruptedError) {
-      logger.error('Stream was interrupted after partial output', { emittedContent: error.emittedContent });
-      return;
-    }
-    if (error instanceof LLMError) {
-      logger.error('LLM request failed', { category: error.category, provider: error.provider, message: error.message });
-      return;
-    }
-    throw error;
+function resolvePort(env: NodeJS.ProcessEnv): number {
+  const raw = env.PORT;
+  if (!raw || raw.trim() === '') return DEFAULT_PORT;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new ConfigurationError(`"PORT" must be a positive integer, got "${raw}".`);
   }
+  return parsed;
 }
 
-main().catch((error: unknown) => {
-  console.error('Fatal error:', error);
-  process.exitCode = 1;
-});
+function main(): void {
+  const port = resolvePort(process.env);
+  const { llmService, logger } = buildCompositionRoot();
+  startHttpServer({ llmService, logger }, port);
+}
+
+try {
+  main();
+} catch (error) {
+  if (error instanceof ConfigurationError) {
+    console.warn(`[${new Date().toISOString()}] Server not started -- ${error.message}\nSet the missing variable(s) above in .env, then rerun.`);
+    process.exitCode = 1;
+  } else {
+    console.error('Fatal error:', error);
+    process.exitCode = 1;
+  }
+}

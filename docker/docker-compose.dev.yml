@@ -7,6 +7,10 @@ services:
     container_name: llm-service-dev
     env_file:
       - ../.env
+    # Matches the PORT default in .env.example; update both sides if you
+    # override PORT in .env.
+    ports:
+      - '3000:3000'
     volumes:
       # Bind-mount the source so `tsx watch` (run by the image's CMD) picks
       # up host edits without an image rebuild. node_modules stays inside
