@@ -56,115 +56,147 @@ export interface LLMConfig {
 
 export type EnvSource = Record<string, string | undefined>;
 
-function required(env: EnvSource, key: string, context: string): string {
+/** Reads a required variable, or records why it's missing and returns ''. */
+function required(env: EnvSource, key: string, context: string, problems: string[]): string {
   const value = env[key];
   if (value === undefined || value.trim() === '') {
-    throw new ConfigurationError(`Missing required environment variable "${key}" (${context}).`);
+    problems.push(`"${key}" is missing (${context}).`);
+    return '';
   }
   return value;
 }
 
-function optionalInt(env: EnvSource, key: string, fallback: number): number {
+function optionalInt(env: EnvSource, key: string, fallback: number, problems: string[]): number {
   const raw = env[key];
   if (raw === undefined || raw.trim() === '') return fallback;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) {
-    throw new ConfigurationError(`Environment variable "${key}" must be a number, got "${raw}".`);
+    problems.push(`"${key}" must be a number, got "${raw}".`);
+    return fallback;
   }
   return parsed;
 }
 
-function parseProvider(raw: string, context: string): LLMProvider {
+/** Validates a non-empty provider string, or records why it's invalid. Caller must not call this with an empty string. */
+function parseProvider(raw: string, label: string, problems: string[]): LLMProvider {
   const normalized = raw.trim().toLowerCase();
   if (!isLLMProvider(normalized)) {
-    throw new ConfigurationError(
-      `Invalid provider "${raw}" (${context}). Expected one of: ${Object.values(LLMProvider).join(', ')}.`,
-    );
+    problems.push(`"${label}" has an invalid value "${raw}". Expected one of: ${Object.values(LLMProvider).join(', ')}.`);
+    return LLMProvider.OpenAI;
   }
   return normalized;
 }
 
-function buildOpenAIConfig(env: EnvSource): OpenAIProviderConfig {
+function buildOpenAIConfig(env: EnvSource, problems: string[]): OpenAIProviderConfig {
   return {
-    apiKey: required(env, 'OPENAI_API_KEY', 'required when LLM_PROVIDER or a routing slot is "openai"'),
+    apiKey: required(env, 'OPENAI_API_KEY', 'required because provider "openai" is in use', problems),
     baseUrl: env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1',
   };
 }
 
-function buildAnthropicConfig(env: EnvSource): AnthropicProviderConfig {
+function buildAnthropicConfig(env: EnvSource, problems: string[]): AnthropicProviderConfig {
   return {
-    apiKey: required(env, 'ANTHROPIC_API_KEY', 'required when LLM_PROVIDER or a routing slot is "anthropic"'),
+    apiKey: required(env, 'ANTHROPIC_API_KEY', 'required because provider "anthropic" is in use', problems),
     baseUrl: env.ANTHROPIC_BASE_URL?.trim() || 'https://api.anthropic.com/v1',
   };
 }
 
-function buildGeminiConfig(env: EnvSource): GeminiProviderConfig {
+function buildGeminiConfig(env: EnvSource, problems: string[]): GeminiProviderConfig {
   return {
-    apiKey: required(env, 'GEMINI_API_KEY', 'required when LLM_PROVIDER or a routing slot is "gemini"'),
+    apiKey: required(env, 'GEMINI_API_KEY', 'required because provider "gemini" is in use', problems),
     baseUrl: env.GEMINI_BASE_URL?.trim() || 'https://generativelanguage.googleapis.com/v1beta',
   };
 }
 
-function buildLocalConfig(env: EnvSource): LocalProviderConfig {
+function buildLocalConfig(env: EnvSource, problems: string[]): LocalProviderConfig {
   return {
-    baseUrl: required(env, 'LOCAL_LLM_BASE_URL', 'required when LLM_PROVIDER or a routing slot is "local"'),
+    baseUrl: required(env, 'LOCAL_LLM_BASE_URL', 'required because provider "local" is in use', problems),
     apiKey: env.LOCAL_LLM_API_KEY?.trim() || undefined,
-    model: required(env, 'LOCAL_LLM_MODEL', 'required when LLM_PROVIDER or a routing slot is "local"'),
+    model: required(env, 'LOCAL_LLM_MODEL', 'required because provider "local" is in use', problems),
   };
 }
 
 /** Builds the provider config for exactly the providers actually referenced by routing. */
-function buildProviderConfigs(env: EnvSource, providersInUse: ReadonlySet<LLMProvider>) {
+function buildProviderConfigs(env: EnvSource, providersInUse: ReadonlySet<LLMProvider>, problems: string[]) {
   return {
-    openai: providersInUse.has(LLMProvider.OpenAI) ? buildOpenAIConfig(env) : undefined,
-    anthropic: providersInUse.has(LLMProvider.Anthropic) ? buildAnthropicConfig(env) : undefined,
-    gemini: providersInUse.has(LLMProvider.Gemini) ? buildGeminiConfig(env) : undefined,
-    local: providersInUse.has(LLMProvider.Local) ? buildLocalConfig(env) : undefined,
+    openai: providersInUse.has(LLMProvider.OpenAI) ? buildOpenAIConfig(env, problems) : undefined,
+    anthropic: providersInUse.has(LLMProvider.Anthropic) ? buildAnthropicConfig(env, problems) : undefined,
+    gemini: providersInUse.has(LLMProvider.Gemini) ? buildGeminiConfig(env, problems) : undefined,
+    local: providersInUse.has(LLMProvider.Local) ? buildLocalConfig(env, problems) : undefined,
   };
+}
+
+function throwIfProblems(problems: readonly string[]): void {
+  if (problems.length === 0) return;
+  const list = problems.map((problem) => `  - ${problem}`).join('\n');
+  throw new ConfigurationError(`Invalid LLM configuration, ${problems.length} problem(s):\n${list}`);
 }
 
 /**
  * Loads and validates the complete LLM configuration from environment
  * variables. Fails fast (ConfigurationError) at startup rather than on the
- * first user request, per the "no lazy config discovery" requirement.
+ * first user request, per the "no lazy config discovery" requirement --
+ * and reports every missing or invalid setting at once rather than one at
+ * a time, so a single run tells the caller everything they need to fix.
  */
 export function loadLLMConfig(env: EnvSource = process.env): LLMConfig {
-  const provider = parseProvider(required(env, 'LLM_PROVIDER', 'selects the active provider'), 'LLM_PROVIDER');
-  const activeModel = required(env, 'ACTIVE_MODEL', 'the model used with LLM_PROVIDER');
+  const shapeProblems: string[] = [];
+
+  const providerRaw = required(env, 'LLM_PROVIDER', 'selects the active provider', shapeProblems);
+  const provider = providerRaw ? parseProvider(providerRaw, 'LLM_PROVIDER', shapeProblems) : LLMProvider.OpenAI;
+  const activeModel = required(env, 'ACTIVE_MODEL', 'the model used with LLM_PROVIDER', shapeProblems);
 
   const fallbackProviderRaw = env.FALLBACK_PROVIDER?.trim();
   const fallbackModelRaw = env.FALLBACK_MODEL?.trim();
-  if ((fallbackProviderRaw && !fallbackModelRaw) || (!fallbackProviderRaw && fallbackModelRaw)) {
-    throw new ConfigurationError('FALLBACK_PROVIDER and FALLBACK_MODEL must be set together, or not at all.');
+  if (fallbackProviderRaw && !fallbackModelRaw) {
+    shapeProblems.push('"FALLBACK_MODEL" is required because "FALLBACK_PROVIDER" is set.');
+  }
+  if (!fallbackProviderRaw && fallbackModelRaw) {
+    shapeProblems.push('"FALLBACK_PROVIDER" is required because "FALLBACK_MODEL" is set.');
   }
 
+  const primaryProviderRaw = env.PRIMARY_PROVIDER?.trim();
+
+  // Resolve provider/routing shape before checking provider-specific keys below --
+  // otherwise a missing/invalid LLM_PROVIDER would cascade into misleading
+  // "API key missing" noise for a provider the caller never actually chose.
+  throwIfProblems(shapeProblems);
+
   const routing: RoutingConfig = {
-    primaryProvider: parseProvider(env.PRIMARY_PROVIDER?.trim() || provider, 'PRIMARY_PROVIDER'),
+    primaryProvider: primaryProviderRaw ? parseProvider(primaryProviderRaw, 'PRIMARY_PROVIDER', shapeProblems) : provider,
     primaryModel: env.PRIMARY_MODEL?.trim() || activeModel,
-    fallbackProvider: fallbackProviderRaw ? parseProvider(fallbackProviderRaw, 'FALLBACK_PROVIDER') : undefined,
+    fallbackProvider: fallbackProviderRaw ? parseProvider(fallbackProviderRaw, 'FALLBACK_PROVIDER', shapeProblems) : undefined,
     fallbackModel: fallbackModelRaw,
   };
+  throwIfProblems(shapeProblems);
 
   const providersInUse = new Set<LLMProvider>([provider, routing.primaryProvider]);
   if (routing.fallbackProvider) providersInUse.add(routing.fallbackProvider);
 
-  const providerConfigs = buildProviderConfigs(env, providersInUse);
+  const problems: string[] = [];
+  const providerConfigs = buildProviderConfigs(env, providersInUse, problems);
+
+  const retry: RetryConfig = {
+    maxRetries: optionalInt(env, 'LLM_RETRY_MAX_ATTEMPTS', 2, problems),
+    baseDelayMs: optionalInt(env, 'LLM_RETRY_BASE_DELAY_MS', 250, problems),
+    maxDelayMs: optionalInt(env, 'LLM_RETRY_MAX_DELAY_MS', 8_000, problems),
+  };
+  const circuitBreaker: CircuitBreakerConfig = {
+    failureThreshold: optionalInt(env, 'LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD', 5, problems),
+    cooldownMs: optionalInt(env, 'LLM_CIRCUIT_BREAKER_COOLDOWN_MS', 30_000, problems),
+    halfOpenMaxAttempts: optionalInt(env, 'LLM_CIRCUIT_BREAKER_HALF_OPEN_MAX_ATTEMPTS', 1, problems),
+  };
+  const defaultTimeoutMs = optionalInt(env, 'LLM_DEFAULT_TIMEOUT_MS', 60_000, problems);
+
+  throwIfProblems(problems);
 
   return {
     provider,
     activeModel,
     ...providerConfigs,
     routing,
-    retry: {
-      maxRetries: optionalInt(env, 'LLM_RETRY_MAX_ATTEMPTS', 2),
-      baseDelayMs: optionalInt(env, 'LLM_RETRY_BASE_DELAY_MS', 250),
-      maxDelayMs: optionalInt(env, 'LLM_RETRY_MAX_DELAY_MS', 8_000),
-    },
-    circuitBreaker: {
-      failureThreshold: optionalInt(env, 'LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD', 5),
-      cooldownMs: optionalInt(env, 'LLM_CIRCUIT_BREAKER_COOLDOWN_MS', 30_000),
-      halfOpenMaxAttempts: optionalInt(env, 'LLM_CIRCUIT_BREAKER_HALF_OPEN_MAX_ATTEMPTS', 1),
-    },
-    defaultTimeoutMs: optionalInt(env, 'LLM_DEFAULT_TIMEOUT_MS', 60_000),
+    retry,
+    circuitBreaker,
+    defaultTimeoutMs,
   };
 }
