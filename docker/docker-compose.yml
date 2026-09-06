@@ -1,3 +1,5 @@
+name: bot-dev
+
 services:
   llm-service:
     build:
